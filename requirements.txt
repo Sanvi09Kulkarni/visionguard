@@ -1,8 +1,8 @@
-ultralytics
-opencv-python
-streamlit
-torch     # if CPU-only: pip will install CPU build; for GPU install proper wheel manually
-numpy
+
+streamlit==1.39.0
+ultralytics==8.2.103
+opencv-python-headless==4.10.0.84
 pandas
-deep_sort_realtime   # optional for tracking
-onnxruntime          # optional for export/acceleration
+numpy
+Pillow
+sqlite3-bro
