@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+.venv/
+env/
+venv/
+
+# Streamlit & cache
+.streamlit/
+visionguard.db
+
+# Model weights (optional)
+*.pt
+models/visionguard_exp*/weights/*.pt
+
+# Temporary files
+temp/
+*.tmp
+*.log
+runs/

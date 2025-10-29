@@ -1,0 +1,8 @@
+ultralytics
+opencv-python
+streamlit
+torch     # if CPU-only: pip will install CPU build; for GPU install proper wheel manually
+numpy
+pandas
+deep_sort_realtime   # optional for tracking
+onnxruntime          # optional for export/acceleration
