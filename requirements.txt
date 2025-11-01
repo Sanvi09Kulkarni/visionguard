@@ -3,7 +3,8 @@ ultralytics
 opencv-python-headless
 pillow
 pandas
-numpy
+numpy<2
+
 sqlalchemy
 
 # ✅ Torch CPU for Linux (compatible with Render)
