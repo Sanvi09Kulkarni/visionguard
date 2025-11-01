@@ -12,9 +12,6 @@ venv/
 .streamlit/
 visionguard.db
 
-# Model weights (optional)
-*.pt
-models/visionguard_exp*/weights/*.pt
 
 # Temporary files
 temp/
