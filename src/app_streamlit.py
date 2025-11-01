@@ -7,10 +7,12 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import time
-import base64  # <-- added for local sound embedding
+import base64
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+import av
 
 # ==============================
-# 🧠 CONFIGURATION
+# 🔧 CONFIG
 # ==============================
 st.set_page_config(
     page_title="VisionGuard - Helmet Detection",
@@ -19,48 +21,59 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom dark theme CSS
+# ==============================
+# 🎨 BACKGROUND IMAGE
+# ==============================
+def set_bg(image_path):
+    if not os.path.exists(image_path):
+        return
+    with open(image_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    st.markdown(f"""
+        <style>
+            .stApp {{
+                background-image: url("data:image/jpg;base64,{encoded}");
+                background-size: cover;
+                background-repeat: no-repeat;
+                background-attachment: fixed;
+            }}
+        </style>
+    """, unsafe_allow_html=True)
+
+set_bg("assets/bg.jpg")
+
+# Dark theme polish
 st.markdown("""
-    <style>
-        body {
-            background-color: #0e1117;
-            color: #f5f6fa;
-        }
-        .stApp {
-            background: linear-gradient(135deg, #0e1117, #1e293b);
-            color: white;
-        }
-        .css-18e3th9, .css-1d391kg {
-            background-color: transparent !important;
-        }
-        .stSidebar {
-            background-color: #111827 !important;
-        }
-        h1, h2, h3, h4, h5, h6, p {
-            color: #e2e8f0 !important;
-        }
-        .sidebar .sidebar-content {
-            background-color: #111827;
-        }
-        .stButton>button {
-            background-color: #2563eb !important;
-            color: white !important;
-            border-radius: 8px;
-        }
-    </style>
+<style>
+    h1, h2, h3, h4, h5, h6, p, label, span {
+        color: #e2e8f0 !important;
+    }
+    .stSidebar {
+        background-color: rgba(17, 24, 39, 0.9) !important;
+    }
+    .stButton>button {
+        background-color: #2563eb !important;
+        color: white !important;
+        border-radius: 8px;
+    }
+</style>
 """, unsafe_allow_html=True)
 
 # ==============================
-# 📦 LOAD MODEL
+# ✅ LOAD MODEL (cached)
 # ==============================
-model_path = "models/visionguard_exp2/weights/best.pt"
-model = YOLO(model_path)
+@st.cache_resource
+def load_model():
+    model_path = "models/visionguard_exp2/weights/best.pt"
+    return YOLO(model_path)
+
+model = load_model()
 
 # ==============================
-# 🗃️ DATABASE SETUP
+# ✅ SQLITE DB
 # ==============================
 DB_PATH = "visionguard.db"
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS detections (
@@ -74,163 +87,145 @@ CREATE TABLE IF NOT EXISTS detections (
 conn.commit()
 
 # ==============================
-# 🧭 SIDEBAR NAVIGATION
+# ✅ SIDEBAR
 # ==============================
 st.sidebar.title("🔍 Navigate")
 page = st.sidebar.radio("Go to", ["Upload Detection", "Webcam Detection", "Dashboard", "About"])
 
-# ==============================
-# 📸 UPLOAD DETECTION PAGE
-# ==============================
+
+# ================================================================
+# ✅ ✅ UPLOAD DETECTION
+# ================================================================
 if page == "Upload Detection":
-    st.title("🪖 VisionGuard")
-    st.subheader("Smart Helmet Detection & Violation Alerts")
+    st.title("🪖 Helmet Detection - Upload Image/Video")
 
     uploaded_file = st.file_uploader(
         "Choose an image or video",
         type=["jpg", "jpeg", "png", "mp4", "mpeg4"]
     )
 
-    if uploaded_file is not None:
-        st.info("🔍 Running detection... please wait")
-        
+    if uploaded_file:
+        st.info("🔍 Running detection...")
+
         suffix = os.path.splitext(uploaded_file.name)[1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            temp_path = tmp_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.read())
+            temp_path = tmp.name
 
         try:
             results = model.predict(temp_path, conf=0.5)
             for r in results:
-                result_img = r.plot()
-                st.image(result_img, caption="Detection Result", use_container_width=True)
+                annotated = r.plot()
+                st.image(annotated, caption="Detection Result", use_container_width=True)
 
-                # Detection Details
-                st.subheader("📊 Detection Details")
-                boxes = r.boxes
-                for i in range(len(boxes)):
-                    cls_id = int(boxes.cls[i])
-                    conf = float(boxes.conf[i])
+                # Save detections
+                for i, box in enumerate(r.boxes):
+                    cls_id = int(box.cls)
+                    conf = float(box.conf)
                     label = model.names[cls_id]
-                    st.write(f"**{label}** – Confidence: `{conf:.2f}`")
 
-                    # Save to DB
-                    cursor.execute("INSERT INTO detections (timestamp, image_name, label, confidence) VALUES (?, ?, ?, ?)",
-                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uploaded_file.name, label, conf))
+                    # Insert into DB
+                    cursor.execute(
+                        "INSERT INTO detections (timestamp, image_name, label, confidence) VALUES (?, ?, ?, ?)",
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uploaded_file.name, label, conf)
+                    )
                     conn.commit()
 
-                    # 🚨 Alert for violation
+                    # Alerts
                     if "Without Helmet" in label:
-                        st.error("🚨 Violation Detected: No Helmet!")
-
-                        # Try playing local beep.mp3
-                        try:
-                            beep_path = "src/beep.mp3"
-                            if os.path.exists(beep_path):
-                                with open(beep_path, "rb") as audio_file:
-                                    audio_bytes = audio_file.read()
-                                st.markdown(
-                                    f"""
-                                    <audio autoplay>
-                                        <source src="data:audio/mp3;base64,{base64.b64encode(audio_bytes).decode()}" type="audio/mp3">
-                                    </audio>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                # fallback online beep
-                                st.markdown(
-                                    '<audio autoplay><source src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" type="audio/ogg"></audio>',
-                                    unsafe_allow_html=True
-                                )
-                        except Exception as sound_err:
-                            st.warning(f"⚠️ Sound could not play: {sound_err}")
-
+                        st.error(f"🚨 No Helmet – {conf:.2f}")
                     else:
-                        st.success("✅ Helmet Worn. Safe to ride!")
+                        st.success(f"✅ Helmet Worn – {conf:.2f}")
+
         except Exception as e:
-            st.error(f"⚠️ Error during detection: {e}")
+            st.error(f"Error: {e}")
         finally:
             os.remove(temp_path)
 
-# ==============================
-# 🎥 WEBCAM DETECTION PAGE
-# ==============================
+
+# ================================================================
+# ✅ ✅ WEBCAM DETECTION WITH STREAMLIT-WEBRTC
+# ================================================================
 elif page == "Webcam Detection":
-    st.title("📹 Real-time Helmet Detection via Webcam")
-    run = st.checkbox("Start Webcam")
+    st.title("📹 Real-time Helmet Detection")
 
-    FRAME_WINDOW = st.image([])
-    camera = cv2.VideoCapture(0)
+    st.info("✅ Works on Render ✅ Works on HTTPS ✅ Mobile/Browser supported")
 
-    while run:
-        ret, frame = camera.read()
-        if not ret:
-            st.error("Unable to access webcam.")
-            break
+    class VideoProcessor(VideoProcessorBase):
 
-        results = model.predict(frame)
-        annotated = results[0].plot()
-        FRAME_WINDOW.image(annotated, channels="BGR")
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
 
-        # Save detections periodically
-        for r in results:
-            boxes = r.boxes
-            for i in range(len(boxes)):
-                cls_id = int(boxes.cls[i])
-                conf = float(boxes.conf[i])
-                label = model.names[cls_id]
-                cursor.execute("INSERT INTO detections (timestamp, image_name, label, confidence) VALUES (?, ?, ?, ?)",
-                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "webcam_frame", label, conf))
-                conn.commit()
+            # YOLO inference
+            results = model.predict(img, conf=0.45, verbose=False)
+            annotated = results[0].plot()
 
-        time.sleep(0.05)
-    else:
-        camera.release()
+            # Log detections
+            for r in results:
+                for box in r.boxes:
+                    cls_id = int(box.cls)
+                    conf = float(box.conf)
+                    label = model.names[cls_id]
+                    cursor.execute(
+                        "INSERT INTO detections (timestamp, image_name, label, confidence) VALUES (?, ?, ?, ?)",
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "webcam", label, conf)
+                    )
+                    conn.commit()
 
-# ==============================
-# 📊 DASHBOARD PAGE
-# ==============================
+            return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+    webrtc_streamer(
+        key="helmet-detect",
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+
+
+# ================================================================
+# ✅ ✅ DASHBOARD
+# ================================================================
 elif page == "Dashboard":
     st.title("📈 Detection Dashboard")
 
     df = pd.read_sql_query("SELECT * FROM detections ORDER BY timestamp DESC", conn)
 
     if df.empty:
-        st.info("No detection data yet.")
+        st.info("No detections yet.")
     else:
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
 
         total = len(df)
-        helmet = len(df[df['label'].str.contains("With Helmet", case=False)])
-        no_helmet = len(df[df['label'].str.contains("Without Helmet", case=False)])
+        helmet = len(df[df.label.str.contains("With Helmet", case=False)])
+        no_helmet = len(df[df.label.str.contains("Without Helmet", case=False)])
 
-        st.subheader("Summary")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Detections", total)
-        col2.metric("Helmet Worn", helmet)
-        col3.metric("Violations", no_helmet)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Detections", total)
+        c2.metric("Helmet Worn", helmet)
+        c3.metric("Violations", no_helmet)
 
-        st.bar_chart(df['label'].value_counts())
+        st.subheader("📊 Violation Distribution")
+        st.bar_chart(df["label"].value_counts())
 
-# ==============================
-# ℹ️ ABOUT PAGE
-# ==============================
+
+# ================================================================
+# ✅ ✅ ABOUT
+# ================================================================
 elif page == "About":
     st.title("🪖 VisionGuard")
-    st.subheader("Smart Helmet Detection & Violation Alerts")
+    st.subheader("AI Helmet Detection System")
 
     st.markdown("""
-    **VisionGuard** is an AI-powered computer vision system that detects helmet usage in real-time using YOLOv8 models.
+    VisionGuard is an AI-powered safety system that uses **YOLOv8**
+    to detect helmet usage in real-time from webcam or uploaded footage.
 
-    ### 🚀 Features:
-    - Real-time image & webcam detection  
-    - Detection dashboard with live logging  
-    - Instant alerts for *No-Helmet* violations  
-    - SQLite-based data tracking  
-    - Sleek dark mode interface
+    **Features:**
+    - ✅ Live webcam helmet detection  
+    - ✅ Upload images/videos  
+    - ✅ Violation alerts  
+    - ✅ Dashboard with history  
+    - ✅ Render deployment compatible  
 
-    ---
-    👩‍💻 **Developed by:** *Sanvi Kulkarni*  
-    🧠 **Powered by:** *Ultralytics YOLOv8 + Streamlit*
+    **Developer:** Sanvi Kulkarni  
     """)
+
